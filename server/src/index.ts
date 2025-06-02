@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import { Server } from "socket.io";
-import { createRoom, startGame, joinRoom, getRoom, removePlayer } from "./game/RoomManager";
+import { createRoom, startGame, joinRoom, getRoom, removePlayer, recordVote } from "./game/RoomManager";
 
 const PORT = 3001;
 
@@ -36,15 +36,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("joinRoom", (data: { code: string; name: string }, callback) => {
-    const room = joinRoom(data.code, socket.id, data.name);
-    if (room) {
-      socket.join(data.code);
-      emitPlayerList(data.code);
-      callback({ success: true, code: data.code });
-    } else {
-      callback({ success: false, message: "Room not found" });
-    }
-  });
+  const room = joinRoom(data.code, socket.id, data.name);
+  if (room) {
+    socket.join(data.code);
+    emitPlayerList(data.code);
+    callback({ success: true, code: data.code });
+  } else {
+    callback({ success: false, message: "Room not found or game in progress" });
+  }
+});
+
 
   socket.on("disconnect", () => {
     removePlayer(socket.id);
@@ -70,13 +71,43 @@ io.on("connection", (socket) => {
     }
     callback({ success: true });
   });
-  //add above
 
-socket.on("startVoting", (code: string) => {
-  // Notify all players in the room to start voting
-  io.to(code).emit("startVoting");
+  socket.on("startVoting", (code: string) => {
+    io.to(code).emit("startVoting");
+  });
+
+  // NEW: Voting and reveal logic
+  socket.on("vote", ({ roomCode, votedFor, voter }) => {
+    const result = recordVote(roomCode, voter, votedFor);
+    if (result) {
+      io.to(roomCode).emit("revealVotes", result);
+    }
+  });
+
+  socket.on("playAgain", (code: string) => {
+  const result = startGame(code);
+  if (result) {
+    // Notify all players in the room of their new word/imposter status
+    for (const p of result.players) {
+      io.to(p.id).emit("gameStarted", {
+        word: result.words![p.id],
+        isImposter: p.id === result.imposterId,
+      });
+    }
+  }
 });
-
+  socket.on("backToLobby", (code: string) => {
+  const room = getRoom(code);
+  if (room) {
+    room.gameStarted = false;
+    room.words = {};
+    room.imposterId = undefined;
+    room.votes = {};
+    // Notify all clients to reset to lobby state
+    io.to(code).emit("backToLobby");
+    emitPlayerList(code);
+  }
+});
 });
 
 app.get("/", (_req, res) => {
